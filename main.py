@@ -1,20 +1,24 @@
 import imaplib
 import email
 import base64
+from time import sleep
+from datetime import datetime
 
 class Email:
-    from config import domian, user, password as _password
+    from config import domian, user, ssl_connection, password as _password
 
     def __init__(self) -> None:
-        pass
+        self.connection = self.connect_ssl() if self.ssl_connection else self.connect()
 
     def connect(self):
-        self.connection = imaplib.IMAP4(self.domian, 993)
-        self.connection.login(self.user, self._password)
+        connection = imaplib.IMAP4(self.domian, 993)
+        connection.login(self.user, self._password)
+        return connection
 
     def connect_ssl(self):
-        self.connection = imaplib.IMAP4_SSL(host=self.domian)
-        self.connection.login(self.user, self._password)
+        connection = imaplib.IMAP4_SSL(host=self.domian)
+        connection.login(self.user, self._password)
+        return connection
 
     def disconect(self):
         self.connection.close()
@@ -22,11 +26,21 @@ class Email:
 
     def get_mails(self, folder = 'INBOX'):
         self.connection.select(folder)
-        status, index_list = self.connection.search(None, 'ALL')
-        return status, index_list
+        #status, index_list = self.connection.search(None, 'ALL')
+        status, uids = self.connection.uid('search', None, 'ALL')
+        return status, uids[0].split()
 
-    def get_mail_content(self, mail_index):
-        status, raw_content = self.connection.fetch(mail_index, '(RFC822)')
+    def get_mail_header(self, mail_id):
+        status, raw_content = self.connection.uid('fetch',mail_id, '(RFC822)')
+        if status == 'OK':
+            msg = email.message_from_bytes(raw_content[0][1])
+            #print(msg.keys())
+            print(msg['Message-ID'])
+            print(msg['Subject'])
+            print(msg['From'])
+
+    def get_mail_content(self, mail_id):
+        status, raw_content = self.connection.uid('fetch',mail_id, '(RFC822)')
         if status == 'OK':
             msg = email.message_from_bytes(raw_content[0][1])
             if msg.is_multipart():
@@ -45,19 +59,42 @@ class Email:
 
         return msg_content
 
+class EmailListener(Email):
+
+    def __init__(self, freqency : int) -> None:
+        super().__init__()
+        self.freq = freqency
+        self.stop = False
+
+    def run(self):
+        status, start_index_list = self.get_mails()
+        if status == 'OK':
+            try:
+                while not self.stop:
+                    sleep_time = 60 // self.freq
+                    print(sleep_time)
+                    sleep(sleep_time)
+                    status , index_list = self.get_mails()
+                    if status != 'OK':
+                        self.stop = True
+                    print('new : ',sorted(list(set(index_list).symmetric_difference(start_index_list))))
+                    start_index_list = index_list
+                    print(datetime.now())
+                self.disconect()
+            except KeyboardInterrupt:
+                self.disconect()
+
 if __name__ == '__main__':
-    inbox = Email()
+    # inbox = Email()
 
-    inbox.domian = 'imap.mail.yahoo.com'
-    inbox.user = 'maciej.mkan'
-    inbox._password = 'brypeweozlzzonpc'
+    # status, index_list = inbox.get_mails()
+    # print(index_list)
+    # if status == 'OK':
+    #     for i in index_list:
+    #         print(i)
+    #         print(inbox.get_mail_header(i))
 
-    inbox.connect_ssl()
+    #inbox.disconect()
+    lst = EmailListener(4)
 
-    status, index_list = inbox.get_mails()
-    if status == 'OK':
-        for i in index_list[0].split():
-            print(i)
-            print(inbox.get_mail_content(i))
-
-    inbox.disconect()
+    lst.run()
