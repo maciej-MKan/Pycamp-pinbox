@@ -5,6 +5,8 @@
 import imaplib
 import email
 import base64
+import multiprocessing
+from os import stat
 from time import sleep
 from datetime import datetime
 
@@ -42,13 +44,16 @@ class Email:
             return status, uids[0].split()
 
     def get_mail_header(self, mail_id):
-        status, raw_content = self.connection.uid('fetch',mail_id, '(RFC822)')
+        status, raw_content = self.connection.uid('fetch', mail_id, '(RFC822)')
         if status == 'OK':
             msg = email.message_from_bytes(raw_content[0][1])
             #print(msg.keys())
-            print(msg['Message-ID'])
-            print(msg['Subject'])
-            print(msg['From'])
+
+        return {
+            'status' : status,
+            'subject' : msg['Subject'],
+            'from' : msg['From']
+        }
 
     def get_mail_content(self, mail_id):
         status, raw_content = self.connection.uid('fetch',mail_id, '(RFC822)')
@@ -76,6 +81,9 @@ class EmailListener(Email):
         super().__init__()
         self.freq = freqency
         self.stop = False
+        self.on_new_event = self._on_new_foo
+        self.on_remove_event = self._on_remove_foo
+        self.events_list = []
 
     def run(self):
         status, start_index_list = self.get_mails()
@@ -90,13 +98,58 @@ class EmailListener(Email):
                         self.stop = True
                     new_mails = list(set(index_list) - set(start_index_list))
                     removed_mails = list(set(start_index_list) - set(index_list))
-                    if new_mails or removed_mails:
-                        print(f'new : {new_mails} \nremoved : {removed_mails}')
-                        print(datetime.now())
+                    current_time = datetime.now()
+                    if new_mails:
+                        self.on_new_event(event=new_mails, event_time = current_time)
+                    if removed_mails:
+                        self.on_remove_event(event=removed_mails, event_time = current_time)
+                        #print('new : ',\
+                        #[(self.get_mail_header(id)['from'], self.get_mail_header(id)['subject']) for id in new_mails])
                     start_index_list = index_list
                 self.disconect()
             except KeyboardInterrupt:
                 self.disconect()
+
+    def _on_new_foo(self, event : list, event_time : datetime) -> None:
+        self.events_list.append((f'new at {event_time}', event))
+
+    def _on_remove_foo(self, event : list, event_time : datetime) -> None:
+        self.events_list.append((f'remove at {event_time}', event))
+
+class EmailFilter(multiprocessing.Process):
+
+    process_list =[]
+
+    def __init__(self, mail_id):
+        super(EmailFilter, self).__init__()
+        self.mail_id = mail_id
+        print('process init')
+        EmailFilter.process_list.append(self)
+
+    def run(self):
+        print('process run')
+        mail_box = Email()
+        mail_box.connection.select('INBOX')
+        mail_header = mail_box.get_mail_header(self.mail_id)
+        if mail_header['subject'] == 'move':
+            print('matching')
+            self.move_email(folder = 'Trash', mail_box=mail_box)
+        mail_box.disconect()
+
+    def move_email(self, folder : str, mail_box : Email):
+        status, _ = mail_box.connection.uid('COPY', self.mail_id, folder)
+        mail_box.connection.uid('STORE', self.mail_id, '-FLAGS', r'(\Seen)')
+        if status == 'OK':
+            mail_box.connection.uid('STORE', self.mail_id , '+FLAGS', r'(\Deleted)')
+            mail_box.connection.expunge()
+
+    def __del__(self):
+        print('del ', self)
+
+def filter_starter(event, event_time):
+    for mail_id in event:
+        email_filter = EmailFilter(mail_id)
+        email_filter.start()
 
 if __name__ == '__main__':
     # inbox = Email()
@@ -110,5 +163,11 @@ if __name__ == '__main__':
 
     #inbox.disconect()
     lst = EmailListener(freqency=4)
+    #print(lst.connection.list())
+    lst.on_new_event = filter_starter
+    lst.on_remove_event = lambda event, event_time : print(f'at {event_time} removed {event}')
 
     lst.run()
+    print(lst.events_list)
+    for process in EmailFilter.process_list:
+        process.join()
