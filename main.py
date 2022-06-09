@@ -1,3 +1,7 @@
+#!/usr/bin/env python3.8
+# -*- encoding: utf-8 -*-
+# -*- coding: utf-8 -*-
+
 import imaplib
 import email
 import base64
@@ -5,19 +9,19 @@ from time import sleep
 from datetime import datetime
 
 class Email:
-    from config import domian, user, ssl_connection, password as _password
+    from config import domian, port, user, ssl_connection, password as _password
 
     def __init__(self) -> None:
         self.connection = self.connect_ssl() if self.ssl_connection else self.connect()
 
     def connect(self):
-        connection = imaplib.IMAP4(self.domian, 993)
-        connection.login(self.user, self._password)
+        connection = imaplib.IMAP4(host=self.domian, port=self.port)
+        print(connection.login(self.user, self._password))
         return connection
 
     def connect_ssl(self):
-        connection = imaplib.IMAP4_SSL(host=self.domian)
-        connection.login(self.user, self._password)
+        connection = imaplib.IMAP4_SSL(host=self.domian, port=self.port)
+        print(connection.login(self.user, self._password))
         return connection
 
     def disconect(self):
@@ -25,10 +29,17 @@ class Email:
         self.connection.logout()
 
     def get_mails(self, folder = 'INBOX'):
-        self.connection.select(folder)
-        #status, index_list = self.connection.search(None, 'ALL')
-        status, uids = self.connection.uid('search', None, 'ALL')
-        return status, uids[0].split()
+        try:
+            self.connection.select(folder)
+            #status, index_list = self.connection.search(None, 'ALL')
+            status, uids = self.connection.uid('search', None, 'ALL')
+        except (imaplib.IMAP4.abort, imaplib.IMAP4_SSL.abort):
+            print('reconect')
+            self.disconect()
+            self.__init__()
+            self.get_mails()
+        else:
+            return status, uids[0].split()
 
     def get_mail_header(self, mail_id):
         status, raw_content = self.connection.uid('fetch',mail_id, '(RFC822)')
@@ -72,14 +83,17 @@ class EmailListener(Email):
             try:
                 while not self.stop:
                     sleep_time = 60 // self.freq
-                    print(sleep_time)
+                    #print(sleep_time)
                     sleep(sleep_time)
                     status , index_list = self.get_mails()
                     if status != 'OK':
                         self.stop = True
-                    print('new : ',sorted(list(set(index_list).symmetric_difference(start_index_list))))
+                    new_mails = list(set(index_list) - set(start_index_list))
+                    removed_mails = list(set(start_index_list) - set(index_list))
+                    if new_mails or removed_mails:
+                        print(f'new : {new_mails} \nremoved : {removed_mails}')
+                        print(datetime.now())
                     start_index_list = index_list
-                    print(datetime.now())
                 self.disconect()
             except KeyboardInterrupt:
                 self.disconect()
@@ -95,6 +109,6 @@ if __name__ == '__main__':
     #         print(inbox.get_mail_header(i))
 
     #inbox.disconect()
-    lst = EmailListener(4)
+    lst = EmailListener(freqency=4)
 
     lst.run()
