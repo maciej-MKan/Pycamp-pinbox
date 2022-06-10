@@ -6,7 +6,6 @@ import imaplib
 import email
 import base64
 import multiprocessing
-from os import stat
 from time import sleep
 from datetime import datetime
 
@@ -27,18 +26,22 @@ class Email:
         return connection
 
     def disconect(self):
-        self.connection.close()
-        self.connection.logout()
+        status, _ = self.connection.close()
+        print(f'close {status}')
+        status, _ = self.connection.logout()
+        print(f'logout {status}')
 
     def get_mails(self, folder = 'INBOX'):
         try:
             self.connection.select(folder)
             #status, index_list = self.connection.search(None, 'ALL')
             status, uids = self.connection.uid('search', None, 'ALL')
-        except (imaplib.IMAP4.abort, imaplib.IMAP4_SSL.abort):
-            print('reconect')
-            self.disconect()
+        except (imaplib.IMAP4.abort, imaplib.IMAP4_SSL.abort) as exc:
+            print('reconect', exc)
+            #self.disconect()
+            print(self.connection.logout())
             self.__init__()
+            sleep(2)
             self.get_mails()
         else:
             return status, uids[0].split()
@@ -131,20 +134,34 @@ class EmailFilter(multiprocessing.Process):
         mail_box = Email()
         mail_box.connection.select('INBOX')
         mail_header = mail_box.get_mail_header(self.mail_id)
+        self.mark_as_unseen(mail_box)
         if mail_header['subject'] == 'move':
             print('matching')
-            self.move_email(folder = 'Trash', mail_box=mail_box)
+            self.move_email(folder = 'TRASH', mail_box=mail_box)
         mail_box.disconect()
 
-    def move_email(self, folder : str, mail_box : Email):
+    def mark_as_unseen(self, mail_box : Email):
+        status = mail_box.connection.uid('STORE', self.mail_id, '-FLAGS', r'(\Seen)')
+        print(f'store {status}')
+        status = mail_box.connection.expunge()
+        print(f'expunge {status}')
+
+    def move_email(self, folder : str, mail_box : Email) -> None:
         status, _ = mail_box.connection.uid('COPY', self.mail_id, folder)
-        mail_box.connection.uid('STORE', self.mail_id, '-FLAGS', r'(\Seen)')
+        print(f'coppy {status}')
         if status == 'OK':
-            mail_box.connection.uid('STORE', self.mail_id , '+FLAGS', r'(\Deleted)')
-            mail_box.connection.expunge()
+            self.delete_email(mail_box)
+
+    def delete_email(self, mail_box : Email):
+        status = mail_box.connection.uid('STORE', self.mail_id , '+FLAGS', r'(\Deleted)')
+        print(f'store {status}')
+        status = mail_box.connection.expunge()
+        print(f'expunge {status}')
 
     def __del__(self):
         print('del ', self)
+        if not self.is_alive():
+            EmailFilter.process_list.remove(self)
 
 def filter_starter(event, event_time):
     for mail_id in event:
@@ -170,4 +187,5 @@ if __name__ == '__main__':
     lst.run()
     print(lst.events_list)
     for process in EmailFilter.process_list:
-        process.join()
+        if process.is_alive():
+            process.join()
