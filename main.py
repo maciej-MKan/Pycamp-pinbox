@@ -5,6 +5,7 @@
 import imaplib
 import email
 import base64
+import yaml
 import multiprocessing
 from time import sleep
 from datetime import datetime
@@ -13,6 +14,10 @@ class Email:
 
     def __init__(self, uid : bytes):
         self.mail_id = uid
+
+    @property
+    def header(self):
+        return self.get_mail_header()
 
     def get_mail_header(self):
         with EmailBox() as email_box:
@@ -24,7 +29,7 @@ class Email:
 
         return {
             'status' : status,
-            'subject' : msg['Subject'],
+            'subject' : msg['Subject'] or "No title",
             'from' : msg['From']
         }
 
@@ -66,7 +71,7 @@ class Email:
             if status == 'OK':
                 self.delete_email()
 
-    def delete_email(self):
+    def delete_email(self, *_):
         with EmailBox() as email_box:
             email_box.select_folder('Inbox')
             status = email_box.connection.uid('STORE', self.mail_id , '+FLAGS', r'(\Deleted)')
@@ -183,28 +188,67 @@ class EmailListener:
     def _on_remove_foo(self, event : list, event_time : datetime) -> None:
         self.events_list.append((f'remove at {event_time}', event))
 
-class EmailFilter(multiprocessing.Process):
+class EmailProcessor(multiprocessing.Process):
 
+    class FilterDone(Exception):
+        pass
 
     def __init__(self, email : Email):
-        super(EmailFilter, self).__init__()
+        super(EmailProcessor, self).__init__()
         self.email = email
+        self.filters_file = 'filters.yaml'
+        self.tmp_filters = [{
+            "element" : "subject",
+            "content" : "email to move",
+            "command" : {"action" : "move_email", "attributs" : "Trash"},
+            "mark" : "no change"
+        },
+        {
+            "element" : "from",
+            "content" : "alien125@g.pl",
+            "command" : {"action" : "delete_email", "attributs" : None},
+            "mark" : "no change"
+        }]
         print('process init')
 
     def run(self):
         print('process run')
-        mail_header = self.email.get_mail_header()
-        self.email.mark_as_unseen()
-        if mail_header['subject'] == 'move':
-            print('matching')
-            self.email.move_email(folder = 'Trash')
+        # mail_header = self.email.get_mail_header()
+        # self.email.mark_as_unseen()
+        # if mail_header['subject'] == 'move':
+        #     print('matching')
+        #     self.email.move_email(folder = 'Trash')
+        filters = open(self.filters_file)
+        for process_filter in self.get_filters(filters):
+            try:
+                self.filter_email(process_filter)
+            except self.FilterDone:
+                break
+            finally:
+                filters.close()
+
+    def get_filters(self, filter_file):
+        return yaml.safe_load_all(filter_file)
+
+    def filter_email(self, filter : dict):
+        if filter['content'] in self.email.header[filter['element']]:
+            self.execute_filter(filter['command'])
+
+
+    def execute_filter(self, command):
+        try:
+            getattr(self.email, command['action'])(command['attributs'])
+        except Exception as err:
+            print(err)
+        else:
+            raise self.FilterDone
 
     def __del__(self):
         print('del ', self)
 
 def filter_starter(event, event_time):
     for email in event:
-        email_filter = EmailFilter(email)
+        email_filter = EmailProcessor(email)
         email_filter.start()
 
 if __name__ == '__main__':

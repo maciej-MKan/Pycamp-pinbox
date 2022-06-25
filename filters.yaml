@@ -1,0 +1,13 @@
+element : subject
+content : email to move
+command :
+  action : move_email
+  attributs : Trash
+mark : no change
+---
+element : from
+content : alien125@g.pl
+command :
+  action : delete_email
+  attributs : None
+mark : no change
